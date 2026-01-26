@@ -1,0 +1,207 @@
+# app/tasks/musicgen_task.py
+
+import os
+import torch
+import soundfile as sf
+import subprocess
+from PIL import Image
+
+from audiocraft.models import MusicGen
+
+from app.celery_app import celery_app
+from app.services.job_store import job_store
+from app.services.audio_postprocess_service import enhance_audio
+
+
+# -------------------------------------------------
+# Paths
+# -------------------------------------------------
+BASE_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(__file__)
+    )
+)
+
+OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+FFMPEG = "/usr/bin/ffmpeg"
+
+
+_MODEL = None
+_MODEL_NAME = None   # ⭐ NEW (track which model is loaded)
+
+
+# -------------------------------------------------
+# Load model once (MODE AWARE)
+# -------------------------------------------------
+def load_musicgen(mode: str):
+    global _MODEL, _MODEL_NAME
+
+    target_model = (
+        "facebook/musicgen-small"
+        if mode == "classical"
+        else "facebook/musicgen-large"
+    )
+
+    # reload only if model changes
+    if _MODEL is None or _MODEL_NAME != target_model:
+        print(f"🎵 Loading MusicGen: {target_model}")
+
+        _MODEL = MusicGen.get_pretrained(target_model)
+        _MODEL_NAME = target_model
+
+        # keep your same safe params
+        _MODEL.set_generation_params(
+            duration=10,
+            use_sampling=True,
+            top_k=250,
+            temperature=1.0,
+            cfg_coef=3.0
+        )
+
+    return _MODEL
+
+
+# -------------------------------------------------
+# Celery Task
+# -------------------------------------------------
+@celery_app.task(name="musicgen.generate", queue="gpu")
+def generate_music_task(job_id: str, payload: dict):
+    try:
+        print(f"\n🎼 Generating music | job={job_id}")
+
+        job_store.set_running(job_id)
+
+        prompt = payload.get("prompt", "")
+
+        print("\n" + "="*60)
+        print("🎯 FINAL PROMPT SENT TO MUSICGEN")
+        print(prompt)
+        print("="*60 + "\n")
+
+        image_path = payload.get("image_path")
+
+        # ⭐ NEW
+        mode = payload.get("mode", "cinematic")
+
+        # 🔥 Enhancement ON by default
+        enhance = True
+
+        # ⭐ MODE-AWARE MODEL
+        model = load_musicgen(mode)
+
+        duration = int(payload.get("duration", 10))
+        model.set_generation_params(duration=duration)
+
+        duration_str = str(duration)
+
+        # -------------------------------------------------
+        # Generate WAV (RAW)
+        # -------------------------------------------------
+        with torch.no_grad():
+            wav = model.generate([prompt])[0]
+
+        wav_path = os.path.abspath(
+            os.path.join(OUTPUT_DIR, f"{job_id}.wav")
+        )
+
+        sf.write(
+            wav_path,
+            wav.cpu().numpy().T,
+            samplerate=32000,
+            subtype="PCM_16"
+        )
+
+        print("✅ RAW WAV:", wav_path)
+
+        # -------------------------------------------------
+        # OPTIONAL Enhancement (ONLY for cinematic mode)
+        # -------------------------------------------------
+        if enhance:
+            try:
+                print("✨ Enhancement enabled (cinematic mode)")
+                wav_path = os.path.abspath(enhance_audio(wav_path))
+                print("✨ ENHANCED WAV:", wav_path)
+            except Exception:
+                print("⚠️ Enhancement failed → using raw audio")
+        else:
+            print("🎧 Classical mode → using dry audio (no enhancement)")
+
+        # -------------------------------------------------
+        # MP4 output path
+        # -------------------------------------------------
+        mp4_path = os.path.abspath(
+            os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+        )
+
+        # -------------------------------------------------
+        # IMAGE → VIDEO
+        # -------------------------------------------------
+        if image_path:
+            image_path = os.path.abspath(image_path)
+
+            if not os.path.exists(image_path):
+                raise RuntimeError(f"Image not found: {image_path}")
+
+            fixed_img = image_path + "_fixed.jpg"
+
+            Image.open(image_path).convert("RGB").save(
+                fixed_img,
+                "JPEG",
+                quality=95
+            )
+
+            print("🖼 Using image:", fixed_img)
+
+            cmd = [
+                FFMPEG, "-y",
+                "-loop", "1",
+                "-framerate", "30",
+                "-t", duration_str,
+                "-i", fixed_img,
+                "-i", wav_path,
+                "-vf",
+                "scale=1080:1080:force_original_aspect_ratio=decrease,"
+                "pad=1080:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-shortest",
+                mp4_path
+            ]
+
+        else:
+            print("🎞 Black background")
+
+            cmd = [
+                FFMPEG, "-y",
+                "-f", "lavfi",
+                "-i", f"color=c=black:s=1080x1080:r=30:d={duration_str}",
+                "-i", wav_path,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-shortest",
+                mp4_path
+            ]
+
+        print("🔥 Running:", " ".join(cmd))
+        subprocess.run(cmd, check=True)
+
+        if not os.path.exists(mp4_path):
+            raise RuntimeError("MP4 not created")
+
+        print("🎬 MP4 created:", mp4_path)
+
+        job_store.set_done(job_id, mp4_path)
+
+        return mp4_path
+
+    except Exception as e:
+        print("❌ TASK FAILED:", e)
+        job_store.set_error(job_id, str(e))
+        raise
+

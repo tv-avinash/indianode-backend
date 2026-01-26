@@ -1,0 +1,91 @@
+tools/reaper/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+.env
+
+# Outputs (VERY IMPORTANT)
+outputs/
+*.wav
+*.mp3
+*.mp4
+
+# AI / torch cache
+.cache/
+torch_cache/
+checkpoints/
+models/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# systemd junk
+*.pid
+
+# Large external AI repos (DO NOT TRACK)
+audiocraft/
+diffsinger/
+external/
+rvc-service/
+vocoder/
+
+# -----------------
+# Python
+# -----------------
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# -----------------
+# Virtual envs (CRITICAL)
+# -----------------
+venv/
+venv-*/
+.venv/
+
+# -----------------
+# Outputs
+# -----------------
+outputs/
+
+# -----------------
+# External models/repos
+# -----------------
+audiocraft/
+diffsinger/
+external/
+rvc-service/
+vocoder/
+
+# -----------------
+# OS junk
+# -----------------
+.DS_Store
+# venvs
+venv/
+venv*/
+**/venv/
+**/venv*/
+
+# python junk
+__pycache__/
+*.pyc
+
+# outputs
+outputs/
+*.wav
+*.mp4

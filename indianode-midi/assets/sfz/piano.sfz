@@ -1,0 +1,9 @@
+<group>
+<region> sample=tone.wav key=60
+<region> sample=tone.wav key=62
+<region> sample=tone.wav key=64
+<region> sample=tone.wav key=65
+<region> sample=tone.wav key=67
+<region> sample=tone.wav key=69
+<region> sample=tone.wav key=71
+

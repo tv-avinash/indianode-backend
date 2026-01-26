@@ -1,0 +1,50 @@
+# app/services/musicgen_service.py
+
+import torch
+import uuid
+from pathlib import Path
+from audiocraft.models import MusicGen
+from audiocraft.data.audio import audio_write
+from app.services.prompt_builder import build_prompt
+
+OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR.mkdir(exist_ok=True)
+
+class MusicGenService:
+    def __init__(self):
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = MusicGen.get_pretrained("facebook/musicgen-large")
+
+    def generate(
+        self,
+        preset_key: str,
+        duration: int = 30,
+        user_description: str | None = None
+    ) -> str:
+
+        prompt, temperature = build_prompt(
+            preset_key=preset_key,
+            user_description=user_description
+        )
+
+        self.model.set_generation_params(
+            duration=duration,
+            top_k=250,
+            temperature=temperature,
+        )
+
+        wav = self.model.generate([prompt])
+
+        file_id = str(uuid.uuid4())
+        output_path = OUTPUT_DIR / f"{file_id}.wav"
+
+        audio_write(
+            output_path.with_suffix(""),
+            wav[0].cpu(),
+            self.model.sample_rate,
+            strategy="loudness",
+            loudness_compressor=True
+        )
+
+        return str(output_path)
+

@@ -1,0 +1,89 @@
+# app/intelligence/intent_analyzer.py
+
+from app.intelligence.llm_client import run_llm
+import json
+
+
+def analyze_intent(text: str) -> dict:
+    prompt = f"""
+You are a music intent analyzer.
+Return ONLY valid JSON.
+
+Fields:
+- mood: string
+- energy: one of ["low","medium","high"] OR number 1–5
+- tempo: slow | medium | fast
+- genre: string
+- instruments: list of strings
+
+User input:
+{text}
+"""
+
+    raw = run_llm(prompt)
+
+    try:
+        intent = json.loads(extract_json(raw))
+    except Exception:
+        intent = {}
+
+    return normalize_intent(intent)
+
+
+def normalize_intent(intent: dict) -> dict:
+    # ---------- ENERGY ----------
+    energy = intent.get("energy", "medium")
+
+    if isinstance(energy, int):
+        if energy <= 2:
+            energy = "low"
+        elif energy == 3:
+            energy = "medium"
+        else:
+            energy = "high"
+    elif isinstance(energy, str):
+        energy = energy.lower()
+        if energy not in ("low", "medium", "high"):
+            energy = "medium"
+    else:
+        energy = "medium"
+
+    # ---------- MOOD ----------
+    mood = intent.get("mood", "calm")
+    if not isinstance(mood, str):
+        mood = "calm"
+
+    # ---------- TEMPO ----------
+    tempo = intent.get("tempo", "medium")
+    if tempo not in ("slow", "medium", "fast"):
+        tempo = "medium"
+
+    # ---------- GENRE ----------
+    genre = intent.get("genre", "ambient")
+    if not isinstance(genre, str):
+        genre = "ambient"
+
+    # ---------- INSTRUMENTS ----------
+    instruments = intent.get("instruments", [])
+    if not isinstance(instruments, list):
+        instruments = []
+
+    return {
+        "mood": mood,
+        "energy": energy,
+        "tempo": tempo,
+        "genre": genre,
+        "instruments": instruments,
+    }
+
+
+def extract_json(text: str) -> str:
+    """
+    Safely extract JSON block from LLM output
+    """
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1:
+        raise ValueError("No JSON found")
+    return text[start : end + 1]
+

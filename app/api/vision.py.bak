@@ -1,0 +1,260 @@
+# app/api/vision.py
+
+from fastapi import APIRouter, UploadFile, File
+import base64
+import os
+from openai import OpenAI
+
+router = APIRouter(prefix="/api/vision", tags=["vision"])
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# =========================================================
+# SYSTEM PROMPT
+# (tight, structured, zero-drift MusicGen prompting)
+# =========================================================
+
+SYSTEM_PROMPT = """
+You generate STRICT, high-quality MusicGen prompts.
+
+Your goal is to produce a COMPLETE, LOGICAL MUSICAL TUNE
+with a clear beginning, repetition, and ending.
+
+Never produce:
+- ambient textures
+- evolving soundscapes
+- pads
+- cinematic washes
+- drifting timing
+- open-ended streams
+
+Music must feel:
+tight, rhythmic, composed, grid-locked.
+
+You will be given an image.
+Silently infer mood, energy, cultural context, era, and environment.
+
+IMPORTANT:
+- Do NOT default to Indian or Western music
+- Choose culture ONLY from the image
+- Output ONLY the prompt
+- No explanation
+
+
+────────────────────────
+FORM REQUIREMENTS
+────────────────────────
+
+First decide ONE role:
+- meditative underscore
+- devotional or sacred motif
+- narrative theme
+- rhythmic pulse piece
+
+Then choose ONE simple form:
+- single repeating phrase (A–A–A)
+- two phrase loop (A–A–B–A)
+
+Form must be obvious and audible.
+
+
+────────────────────────
+HARD MUSIC RULES (CRITICAL)
+────────────────────────
+
+ALWAYS:
+• one lead instrument only
+• one rhythm source only
+• short phrases only
+• repeating motif only
+• fixed notes only
+• tight timing
+• quantized timing (MANDATORY ⭐)
+• clean articulation
+• dry mix
+• clear ending
+
+NEVER:
+• sustain wash
+• loose tempo
+• rubato
+• long notes
+• improvisation
+• evolving textures
+• pads
+• cinematic builds
+
+
+Output STRICTLY as:
+
+<genre>, <mood>, <tempo>,
+<form description>,
+<lead instrument> melody, <melody behavior>,
+<rhythm behavior>,
+<ensemble interaction>,
+<ending behavior>,
+<texture>,
+<negative constraints>
+
+Max 9 lines.
+"""
+
+
+# =========================================================
+# VOCABULARY (constrained = tighter music)
+# =========================================================
+
+VOCABULARY = """
+Allowed genres (choose based on image context ONLY):
+
+Indian:
+indian classical carnatic,
+indian classical,
+indian fusion
+
+Western:
+acoustic folk,
+solo piano,
+modern classical,
+minimal electronic,
+chill electronic
+
+
+Allowed lead instruments:
+veena,
+plucked string,
+acoustic guitar,
+piano,
+synth
+
+
+Lead selection guidance:
+Sacred/traditional → veena or piano
+Nature → plucked string or acoustic guitar
+Human/emotional → piano
+Urban/modern → synth
+
+
+MANDATORY articulation for ALL instruments:
+• clean attack
+• short decay
+• dry close mic
+• quantized timing
+• no slides
+• no vibrato
+• no pitch bends
+• no sustain wash
+
+
+Allowed melody behaviors:
+clear repeating motif, fixed notes,
+identical phrasing, locked timing,
+short notes only
+
+
+Allowed rhythm behaviors:
+soft steady tala, locked cycle,
+hand drum rhythm, minimal hits,
+steady pulse, quantized,
+grid-locked beat
+
+
+Allowed ensemble interaction:
+lead dominant,
+rhythm strictly aligned to melody,
+single layer only,
+no counter-melody,
+no fills
+
+
+Allowed ending behaviors:
+final repetition and clean stop,
+clear cadence and silence
+
+
+Allowed textures:
+dry, clean, intimate
+clean, modern
+
+
+Allowed negatives (include at least 5):
+no cinematic
+no pads
+no ambience
+no reverb wash
+no long sustain
+no evolving texture
+no improvisation
+no loose timing
+no tempo drift
+no slow attack
+"""
+
+
+# =========================================================
+# ROUTE
+# =========================================================
+
+@router.post("/analyze-image")
+async def analyze_image(image: UploadFile = File(...)):
+    try:
+        image_bytes = await image.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT + "\n\n" + VOCABULARY
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Generate a tight, structured, fully-composed MusicGen prompt from this image."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}"
+                            }
+                        }
+                    ]
+                }
+            ],
+            temperature=0.35,  # lower = tighter + less creative drift
+            max_tokens=260
+        )
+
+        prompt = completion.choices[0].message.content.strip()
+
+        return {
+            "source": "chatgpt-vision",
+            "analysis": {
+                "suggested_prompt": prompt
+            }
+        }
+
+    except Exception as e:
+        print("VISION ERROR:", repr(e))
+
+        # Safe deterministic fallback
+        return {
+            "source": "fallback",
+            "analysis": {
+                "suggested_prompt": (
+                    "indian classical carnatic, calm, medium tempo,\n"
+                    "two phrase loop (A–A–B–A),\n"
+                    "veena melody, clear repeating motif, fixed notes,\n"
+                    "soft steady tala, locked cycle,\n"
+                    "lead dominant, rhythm strictly aligned,\n"
+                    "final repetition and clean stop,\n"
+                    "dry, clean, intimate,\n"
+                    "no cinematic, no pads, no reverb wash, no sustain, no improvisation"
+                )
+            }
+        }
+

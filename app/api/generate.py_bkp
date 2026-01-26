@@ -1,0 +1,194 @@
+# app/api/generate.py
+
+import uuid
+import os
+from typing import List, Optional
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import FileResponse
+from pydantic import BaseModel
+
+from celery.result import AsyncResult
+
+from app.celery_app import celery_app
+from app.tasks.musicgen_task import generate_music_task
+from app.intelligence.intent_analyzer import analyze_intent
+
+router = APIRouter(prefix="/api/music")
+
+OUTPUT_DIR = "outputs"
+MIN_WORDS_FOR_DIRECT_PROMPT = 6
+
+
+# -----------------------------
+# Request schema
+# -----------------------------
+class GenerateRequest(BaseModel):
+    description: Optional[str] = None
+    prompt: Optional[str] = None
+    preset: Optional[str] = None
+    instruments: Optional[List[str]] = []
+    duration: int = 10
+
+
+# -----------------------------
+# Generate music (enqueue only)
+# -----------------------------
+@router.post("/generate")
+def generate_music(req: GenerateRequest):
+    job_id = str(uuid.uuid4())
+
+    print("\n🎯 /api/music/generate RECEIVED")
+    print("  preset     :", req.preset)
+    print("  instruments:", req.instruments)
+    print("  description:", req.description)
+    print("  prompt     :", req.prompt)
+    print("  duration   :", req.duration)
+
+    # Build raw text prompt
+    parts = []
+
+    if req.preset:
+        parts.append(f"{req.preset} style music")
+
+    if req.instruments:
+        parts.append("featuring " + ", ".join(req.instruments))
+
+    if req.description:
+        parts.append(req.description)
+
+    if req.prompt:
+        parts.append(req.prompt)
+
+    final_prompt = ". ".join(parts).strip()
+
+    print("\n🧱 BUILT PROMPT (RAW):")
+    print(final_prompt)
+
+    if not final_prompt:
+        raise HTTPException(
+            status_code=400,
+            detail="No musical description provided"
+        )
+
+    # -------------------------------------------------
+    # OPTION B — Conditional LLM usage
+    # -------------------------------------------------
+    word_count = len(final_prompt.split())
+
+    if word_count < MIN_WORDS_FOR_DIRECT_PROMPT:
+        print(f"\n🧠 Using LLM (short prompt: {word_count} words)")
+        intent = analyze_intent(final_prompt)
+
+        # Convert intent → natural language prompt
+        music_prompt = build_music_prompt_from_intent(intent)
+    else:
+        print(f"\n🚀 Bypassing LLM (rich prompt: {word_count} words)")
+        music_prompt = final_prompt
+
+    payload = {
+        "prompt": music_prompt,
+        "duration": req.duration,
+    }
+
+    print("\n🎼 FINAL PROMPT → MUSICGEN:")
+    print(music_prompt)
+
+    print("\n🚀 ENQUEUING CELERY TASK")
+    generate_music_task.delay(job_id, payload)
+
+    return {
+        "job_id": job_id,
+        "status": "queued",
+    }
+
+
+# -----------------------------
+# Job status
+# -----------------------------
+@router.get("/status/{job_id}")
+def job_status(job_id: str):
+    wav_path = os.path.join(OUTPUT_DIR, f"{job_id}.wav")
+    result = AsyncResult(job_id, app=celery_app)
+
+    if os.path.exists(wav_path):
+        return {"status": "done", "result": wav_path}
+
+    if result.state == "PENDING":
+        return {"status": "queued"}
+
+    if result.state == "STARTED":
+        return {"status": "running"}
+
+    if result.state == "FAILURE":
+        return {"status": "error", "error": str(result.info)}
+
+    return {"status": result.state}
+
+
+# -----------------------------
+# Download WAV
+# -----------------------------
+@router.get("/download/{job_id}")
+def download_audio(job_id: str):
+    wav_path = os.path.join(OUTPUT_DIR, f"{job_id}.wav")
+
+    if not os.path.exists(wav_path):
+        raise HTTPException(status_code=404, detail="Audio not ready")
+
+    return FileResponse(
+        wav_path,
+        media_type="audio/wav",
+        filename=f"{job_id}.wav",
+        headers={"Accept-Ranges": "bytes", "Cache-Control": "no-store"},
+    )
+
+
+# -----------------------------
+# Download MP4
+# -----------------------------
+@router.get("/download-mp4/{job_id}")
+def download_video(job_id: str):
+    mp4_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+
+    if not os.path.exists(mp4_path):
+        raise HTTPException(status_code=404, detail="Video not ready")
+
+    return FileResponse(
+        mp4_path,
+        media_type="video/mp4",
+        filename=f"{job_id}.mp4",
+        headers={
+            "Content-Disposition": f'attachment; filename="{job_id}.mp4"',
+            "Accept-Ranges": "bytes",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
+# -----------------------------
+# Intent → Prompt (LOCAL, SAFE)
+# -----------------------------
+def build_music_prompt_from_intent(intent: dict) -> str:
+    parts = []
+
+    if intent.get("desired_music_effect"):
+        parts.append(intent["desired_music_effect"])
+
+    if intent.get("genre"):
+        parts.append(intent["genre"])
+
+    if intent.get("tempo"):
+        parts.append(f"{intent['tempo']} tempo")
+
+    if intent.get("energy"):
+        parts.append(f"{intent['energy']} energy")
+
+    if intent.get("instruments"):
+        parts.append("featuring " + ", ".join(intent["instruments"]))
+
+    if intent.get("vocals") == "none":
+        parts.append("instrumental, no vocals")
+
+    return ", ".join(parts)
+

@@ -1,0 +1,213 @@
+# app/api/vision.py
+
+from fastapi import APIRouter, UploadFile, File
+import base64
+import os
+from openai import OpenAI
+import json
+
+router = APIRouter(prefix="/api/vision", tags=["vision"])
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# =========================================================
+# SYSTEM PROMPT (STRICT JSON STRUCTURED MODE)
+# =========================================================
+
+SYSTEM_PROMPT = """
+You are a deterministic MusicGen arranger.
+
+You receive an IMAGE and must output STRICT JSON ONLY.
+
+Infer:
+• tempo
+• instruments
+• structure
+• phrasing
+• articulation
+• recording style
+
+CRITICAL INSTRUMENT RULE:
+
+DEFAULT → WESTERN instruments
+Only choose Indian instruments if the image CLEARLY shows:
+temple, deity, classical dance, traditional attire, veena, mridangam, flute, raga performance.
+
+Never assume Indian automatically.
+
+Return EXACTLY this schema:
+
+{
+  tempo_bpm:int,
+  time_signature:str,
+  tala:str,
+  scale_or_raga:str,
+
+  lead_instrument:str,
+  lead_role:str,
+
+  support_instruments:list,
+  rhythm_instruments:list,
+  drone_instruments:list,
+
+  phrase_length:str,
+  note_length:str,
+  rest_density:str,
+
+  articulation:list,
+  ornamentation:list,
+  melodic_motion:str,
+
+  attack:str,
+  sustain:str,
+  decay:str,
+
+  recording_style:list,
+  mix_style:list,
+
+  negatives:list
+}
+
+Rules:
+• quantized timing
+• tight rhythm
+• short phrases
+• dry mix
+• only technical audio terms
+• no prose
+"""
+
+
+# =========================================================
+# DEVOTIONAL / SACRED AUTO GUARDRAILS
+# Deterministic post-processing (no LLM randomness)
+# =========================================================
+
+def apply_devotional_guardrails(cfg: dict) -> dict:
+    """
+    If music looks devotional/sacred, force calmer feel.
+
+    SAFE:
+    - only modifies a few fields
+    - keeps schema intact
+    - no frontend changes
+    """
+
+    sacred_leads = {"veena", "tanpura", "bansuri", "flute"}
+    sacred_talas = {"adi tala", "rupaka tala", "ektal"}
+
+    lead = cfg.get("lead_instrument", "").lower()
+    tala = cfg.get("tala", "").lower()
+    scale = cfg.get("scale_or_raga", "").lower()
+
+    is_devotional = (
+        lead in sacred_leads
+        or tala in sacred_talas
+        or "raga" in scale
+    )
+
+    if not is_devotional:
+        return cfg
+
+    # -------------------------
+    # FORCE CALMER PARAMETERS
+    # -------------------------
+
+    cfg["tempo_bpm"] = min(int(cfg.get("tempo_bpm", 70)), 64)
+
+    cfg["note_length"] = "long"
+    cfg["rest_density"] = "high"
+
+    # remove busy percussion
+    cfg["rhythm_instruments"] = []
+
+    # ensure drone exists
+    if "tanpura" not in cfg["drone_instruments"]:
+        cfg["drone_instruments"].append("tanpura")
+
+    # softer envelope
+    cfg["attack"] = "soft"
+    cfg["sustain"] = "long"
+    cfg["decay"] = "long"
+
+    return cfg
+
+
+# =========================================================
+# ROUTE
+# =========================================================
+
+@router.post("/analyze-image")
+async def analyze_image(image: UploadFile = File(...)):
+    try:
+        image_bytes = await image.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+
+        completion = client.chat.completions.create(
+            model="gpt-4o-mini",
+            temperature=0.15,   # deterministic like text route
+            max_tokens=260,
+            messages=[
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "Analyze the image and output only the JSON music configuration."
+                        },
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:image/jpeg;base64,{image_b64}"
+                            }
+                        }
+                    ]
+                }
+            ]
+        )
+
+        raw = completion.choices[0].message.content.strip()
+
+        # ---------------------------------------------
+        # Parse JSON safely
+        # ---------------------------------------------
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            parsed = {}
+
+        config = fill_missing(parsed)
+
+        # ⭐ NEW: deterministic devotional slow-down
+        config = apply_devotional_guardrails(config)
+
+        prompt_line = config_to_musicgen_prompt(config)
+
+        return {
+            "source": "vision-structured",
+            "analysis": {
+                "suggested_prompt": prompt_line,  # frontend unchanged
+                "enhanced_config": config
+            }
+        }
+
+    except Exception as e:
+        print("VISION ERROR:", repr(e))
+
+        # Safe fallback (still string for compatibility)
+        return {
+            "source": "fallback",
+            "analysis": {
+                "suggested_prompt": (
+                    "64 bpm, 4/4, veena lead, melody, tanpura, "
+                    "4 bars, long, high, legato, stepwise, soft, long, long, "
+                    "dry, close mic, mono"
+                )
+            }
+        }
+

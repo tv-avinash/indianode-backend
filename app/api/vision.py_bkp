@@ -1,0 +1,48 @@
+from fastapi import APIRouter, UploadFile, File, HTTPException
+from transformers import BlipProcessor, BlipForConditionalGeneration
+from PIL import Image
+import torch
+import io
+
+router = APIRouter(prefix="/api/vision", tags=["vision"])
+
+# Load BLIP once (important for performance)
+processor = BlipProcessor.from_pretrained(
+    "Salesforce/blip-image-captioning-base"
+)
+model = BlipForConditionalGeneration.from_pretrained(
+    "Salesforce/blip-image-captioning-base"
+)
+
+@router.post("/analyze-image")
+async def analyze_image(image: UploadFile = File(...)):
+    try:
+        # Read image
+        img_bytes = await image.read()
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+        # Generate caption
+        inputs = processor(images=img, return_tensors="pt")
+        with torch.no_grad():
+            out = model.generate(**inputs, max_new_tokens=40)
+
+        caption = processor.decode(out[0], skip_special_tokens=True)
+
+        # 🔑 Minimal, non-hardcoded prompt
+        suggested_prompt = (
+            f"Compose music inspired by the following visual scene:\n\n"
+            f"{caption}\n\n"
+            f"Focus on atmosphere, emotion, and storytelling."
+        )
+
+        return {
+            "source": "vision",
+            "analysis": {
+                "caption": caption,
+                "suggested_prompt": suggested_prompt
+            }
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+

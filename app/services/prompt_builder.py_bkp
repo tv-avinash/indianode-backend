@@ -1,0 +1,21 @@
+# app/services/prompt_builder.py
+
+from app.services.presets import PRESETS
+
+def build_prompt(
+    preset_key: str,
+    user_description: str | None = None
+):
+    if preset_key not in PRESETS:
+        raise ValueError(f"Invalid preset: {preset_key}")
+
+    preset = PRESETS[preset_key]
+    base_prompt = preset["base_prompt"]
+
+    if user_description:
+        final_prompt = f"{base_prompt}, {user_description}"
+    else:
+        final_prompt = base_prompt
+
+    return final_prompt, preset["temperature"]
+
