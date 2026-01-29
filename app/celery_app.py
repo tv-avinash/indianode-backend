@@ -18,3 +18,4 @@ celery_app.conf.update(
     task_acks_late=True,
 )
 
+import app.tasks.accompaniment_task

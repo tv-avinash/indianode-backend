@@ -16,6 +16,10 @@ app = FastAPI(
 from app.api.kriti_midi import router as kriti_router
 app.include_router(kriti_router)
 app.include_router(prompt_router)
+### flow to add background to uploaded vocal
+from app.api import accompaniment
+app.include_router(accompaniment.router)
+
 # =========================
 # 🎵 Music Generation API
 # =========================
