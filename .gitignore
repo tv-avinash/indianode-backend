@@ -4,7 +4,12 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
-
+*.mid
+*.mp4
+*.m4a
+*.wav
+*.mp3
+*.sf2
 # Virtual env
 venv/
 .env
