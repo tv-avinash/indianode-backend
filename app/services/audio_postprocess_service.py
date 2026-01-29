@@ -105,12 +105,9 @@ def enhance_audio(input_path: str, output_path: str | None = None) -> str:
 
     # -------------------------------------------------
     # 4. Mastering chain (clean + safe)
+    # 🔥 UPDATED: removed chorus/echo/compressor/EQ (caused hiss/phase)
     # -------------------------------------------------
     filter_chain = (
-        "equalizer=f=150:width_type=o:width=2:g=4,"
-        "acompressor=threshold=-24dB:ratio=2,"
-        "chorus=0.4:0.8:20:0.3:2:0.2,"
-        "aecho=0.8:0.9:800:0.15,"
         "loudnorm=I=-14:LRA=11:TP=-1.5"
     )
 
@@ -123,6 +120,7 @@ def enhance_audio(input_path: str, output_path: str | None = None) -> str:
         output_path
     ])
     print("\n🔥🔥🔥 OZONE MASTERING RUNNING 🔥🔥🔥\n")
+
     # -------------------------------------------------
     # Final safety check
     # -------------------------------------------------

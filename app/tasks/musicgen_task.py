@@ -20,6 +20,12 @@ from app.services.classical_postprocess_service import classical_polish_audio
 from app.services.audio_quality_service import check_audio_quality
 from app.services.prompt_repair_service import repair_prompt
 
+# ✅ NEW — technical crack/hiss repair ONLY (no musical changes)
+from app.services.audio_technical_qa import (
+    check_audio_technical_quality,
+    repair_audio_technical
+)
+
 
 # -------------------------------------------------
 # Paths
@@ -39,7 +45,7 @@ FFMPEG = "/usr/bin/ffmpeg"
 _MODEL = None
 _MODEL_NAME = None
 
-MAX_RETRIES = 4
+MAX_RETRIES = 4  # ✅ unchanged
 
 
 # -------------------------------------------------
@@ -118,6 +124,18 @@ def generate_music_task(job_id: str, payload: dict):
                 subtype="PCM_16"
             )
 
+            # =================================================
+            # 🔧 NEW — technical crack/hiss/clipping repair ONLY
+            # (safe DSP, does NOT change music)
+            # =================================================
+            tech_ok, issues = check_audio_technical_quality(wav_path)
+            if not tech_ok:
+                print("🔧 Technical issues detected:", issues)
+                wav_path = repair_audio_technical(wav_path)
+
+            # =================================================
+            # EXISTING AI QUALITY CHECK (UNCHANGED)
+            # =================================================
             passed, reason = check_audio_quality(wav_path, prompt)
 
             if passed:
@@ -136,13 +154,10 @@ def generate_music_task(job_id: str, payload: dict):
         print("✅ RAW WAV:", wav_path)
 
         # =================================================
-        # ⭐ MODE-SPECIFIC PIPELINE (ONLY CHANGE)
+        # ⭐ MODE-SPECIFIC PIPELINE (UNCHANGED)
         # =================================================
 
         if mode == "classical":
-            # ---------------------------------------------
-            # CLEAN STUDIO ONLY (NO cinematic FX, NO ozone)
-            # ---------------------------------------------
             print("🎻 Classical mode → clean acoustic polish only")
 
             wav_path = os.path.abspath(
@@ -152,9 +167,6 @@ def generate_music_task(job_id: str, payload: dict):
             print("🎻 CLASSICAL POLISHED WAV:", wav_path)
 
         else:
-            # ---------------------------------------------
-            # ORIGINAL CINEMATIC PIPELINE (UNCHANGED)
-            # ---------------------------------------------
             try:
                 print("✨ Running enhancement...")
                 wav_path = os.path.abspath(enhance_audio(wav_path))

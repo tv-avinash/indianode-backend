@@ -1,0 +1,262 @@
+import os
+import sys
+import json
+import random
+import subprocess
+import numpy as np
+import librosa
+import pretty_midi
+from openai import OpenAI
+
+# =====================================================
+# CONFIG
+# =====================================================
+
+SR = 32000
+SF2 = "/usr/share/sounds/sf2/FluidR3_GM.sf2"   # system soundfont (stable)
+
+
+# =====================================================
+# helpers
+# =====================================================
+
+def run(cmd):
+    subprocess.run(cmd, shell=True, check=True)
+
+
+def jitter(t, amount=0.010):
+    return t + random.uniform(-amount, amount)
+
+
+def vel(base):
+    return int(base + random.randint(-4, 4))
+
+
+# =====================================================
+# GM map
+# =====================================================
+
+GM = {
+    "piano": "Acoustic Grand Piano",
+    "bass": "Acoustic Bass",
+    "strings": "String Ensemble 1",
+    "pad": "Pad 2 (warm)",
+    "guitar": "Acoustic Guitar (steel)"
+}
+
+
+def add_inst(name):
+
+    if name == "drums":
+        return pretty_midi.Instrument(program=0, is_drum=True)
+
+    if name not in GM:
+        name = "pad"
+
+    prog = pretty_midi.instrument_name_to_program(GM[name])
+    return pretty_midi.Instrument(program=prog)
+
+
+# =====================================================
+# AUDIO ANALYSIS
+# =====================================================
+
+def analyze_audio(y, sr):
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    rms = np.mean(librosa.feature.rms(y=y))
+    duration = len(y) / sr
+    return float(tempo), float(rms), duration
+
+
+# =====================================================
+# MOOD CLASSIFIER
+# =====================================================
+
+def classify_mood(tempo, energy):
+
+    if tempo < 75 and energy < 0.02:
+        return "ambient"
+
+    if tempo < 90:
+        return "soft"
+
+    if tempo > 115 and energy > 0.04:
+        return "energetic"
+
+    if energy < 0.025:
+        return "emotional"
+
+    return "acoustic"
+
+
+# =====================================================
+# STYLE PICKER (LLM optional)
+# =====================================================
+
+def style_from_llm(mood):
+
+    fallback = {
+        "ambient":   ["pad", "strings"],
+        "soft":      ["piano", "pad", "bass"],
+        "emotional": ["strings", "pad", "bass"],
+        "acoustic":  ["guitar", "bass", "drums"],
+        "energetic": ["guitar", "bass", "drums", "pad"]
+    }
+
+    key = os.getenv("OPENAI_API_KEY")
+
+    if not key:
+        return {"instruments": fallback[mood]}
+
+    try:
+        client = OpenAI(api_key=key)
+
+        r = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=[{
+                "role": "user",
+                "content": f"""
+Mood: {mood}
+Choose instruments only from:
+piano,bass,pad,strings,guitar,drums
+Return JSON {{ "instruments": [...] }}
+"""
+            }]
+        )
+
+        parsed = json.loads(r.choices[0].message.content)
+        return parsed
+
+    except:
+        return {"instruments": fallback[mood]}
+
+
+# =====================================================
+# CHORD DETECTION
+# =====================================================
+
+NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
+
+
+def detect_chords(y, sr):
+
+    chroma = librosa.feature.chroma_cqt(y=y, sr=sr)
+    tempo, beats = librosa.beat.beat_track(y=y, sr=sr)
+    beat_times = librosa.frames_to_time(beats, sr=sr)
+
+    chords = []
+
+    for i in range(len(beats)-1):
+        s, e = beats[i], beats[i+1]
+        energy = chroma[:, s:e].mean(axis=1)
+        root = np.argmax(energy)
+        chords.append(NOTE_NAMES[root])
+
+    return chords, beat_times
+
+
+# =====================================================
+# MIDI BUILDER
+# =====================================================
+
+def smooth_energy(t, duration):
+    return 63 + int(3*np.sin((t/duration)*np.pi))
+
+
+def build_midi(chords, beat_times, tempo, style, duration):
+
+    pm = pretty_midi.PrettyMIDI(initial_tempo=tempo)
+    inst_objs = {n: add_inst(n) for n in style["instruments"]}
+
+    for i, chord in enumerate(chords):
+
+        start = beat_times[i]
+        end = beat_times[i+1] if i+1 < len(beat_times) else duration
+        base = smooth_energy(start, duration)
+
+        root = NOTE_NAMES.index(chord)
+        root_midi = 60 + root
+
+        for name, inst in inst_objs.items():
+
+            if name == "bass":
+                inst.notes.append(pretty_midi.Note(vel(base-6), root_midi-24, jitter(start), jitter(end)))
+
+            elif name in ["pad","strings","piano","guitar"]:
+                for p in [0,4,7]:
+                    inst.notes.append(pretty_midi.Note(vel(base-10), root_midi+p, jitter(start), jitter(end)))
+
+            elif name == "drums":
+                inst.notes.append(pretty_midi.Note(55, 36, jitter(start), jitter(start+0.07))
+
+)
+
+    for i in inst_objs.values():
+        pm.instruments.append(i)
+
+    pm.write("accompaniment.mid")
+
+
+# =====================================================
+# SAFE CINEMATIC VIDEO (NO DEPENDENCIES)
+# =====================================================
+
+def create_visualizer(audio_file, out_file):
+
+    print("🎬 Creating clean cinematic logo video...")
+
+    cmd = (
+        f'ffmpeg -y -i "{audio_file}" '
+        f'-filter_complex "'
+        f'color=c=black:s=1280x720:d=60,'
+        f'drawtext=text=indianode.com:fontcolor=white:fontsize=90:'
+        f'x=(w-text_w)/2:y=(h-text_h)/2,'
+        f'fade=t=in:st=0:d=2,'
+        f'fade=t=out:st=55:d=3'
+        f'" '
+        f'-c:v libx264 -pix_fmt yuv420p '
+        f'-c:a aac -b:a 192k '
+        f'-shortest "{out_file}"'
+    )
+
+    run(cmd)
+
+
+# =====================================================
+# MAIN
+# =====================================================
+
+if len(sys.argv) < 2:
+    print("Usage: python smart_arranger_style_aware.py input_audio")
+    sys.exit(1)
+
+input_file = sys.argv[1]
+
+print("🎤 Converting...")
+run(f'ffmpeg -y -i "{input_file}" -ac 1 -ar {SR} vocal.wav')
+
+y, sr = librosa.load("vocal.wav", sr=22050)
+
+tempo, energy, duration = analyze_audio(y, sr)
+
+mood = classify_mood(tempo, energy)
+style = style_from_llm(mood)
+
+chords, beat_times = detect_chords(y, sr)
+
+print("🔊 Rendering accompaniment...")
+build_midi(chords, beat_times, tempo, style, duration)
+
+run(f'fluidsynth -ni {SF2} accompaniment.mid -F bgm.wav -r {SR}')
+
+print("🎚 Mixing + mastering...")
+run(
+    f'ffmpeg -y -i vocal.wav -i bgm.wav '
+    f'-filter_complex "amix=inputs=2:weights=1 1.25,volume=2.0,alimiter=limit=0.95" '
+    f'-ar {SR} final_mix.wav'
+)
+
+create_visualizer("final_mix.wav", "final_video.mp4")
+
+print("\n✅ DONE → final_mix.wav + final_video.mp4")
+
