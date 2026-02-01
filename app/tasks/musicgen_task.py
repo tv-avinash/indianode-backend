@@ -8,7 +8,7 @@ from PIL import Image
 
 from audiocraft.models import MusicGen
 
-from app.celery_app import celery_app
+from celery import shared_task 
 from app.services.job_store import job_store
 from app.services.audio_postprocess_service import enhance_audio
 from app.services.mastering.mastering_service import master_audio
@@ -80,7 +80,7 @@ def load_musicgen(mode: str):
 # -------------------------------------------------
 # Celery Task
 # -------------------------------------------------
-@celery_app.task(name="musicgen.generate", queue="gpu")
+@shared_task(name="musicgen.generate", queue="gpu")
 def generate_music_task(job_id: str, payload: dict):
     try:
         print(f"\n🎼 Generating music | job={job_id}")

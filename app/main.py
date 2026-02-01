@@ -19,6 +19,10 @@ app.include_router(prompt_router)
 ### flow to add background to uploaded vocal
 from app.api import accompaniment
 app.include_router(accompaniment.router)
+### bgm for vlogs and podcast
+from app.api import bgm
+
+app.include_router(bgm.router)
 
 # =========================
 # 🎵 Music Generation API

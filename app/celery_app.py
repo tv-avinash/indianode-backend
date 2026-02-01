@@ -1,14 +1,12 @@
 from celery import Celery
 
-celery_app = Celery(
+celery = Celery(
     "indianode",
     broker="redis://localhost:6379/0",
     backend="redis://localhost:6379/1",
 )
 
-import app.tasks.musicgen_task  # noqa
-
-celery_app.conf.update(
+celery.conf.update(
     task_serializer="json",
     accept_content=["json"],
     result_serializer="json",
@@ -18,4 +16,10 @@ celery_app.conf.update(
     task_acks_late=True,
 )
 
+# ✅ EXPLICIT imports (guaranteed registration)
+import app.tasks.musicgen_task
 import app.tasks.accompaniment_task
+
+# compatibility alias
+celery_app = celery
+
