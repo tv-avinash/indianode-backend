@@ -90,7 +90,6 @@ def generate_music_task(job_id: str, payload: dict):
         prompt = payload.get("prompt", "")
         image_path = payload.get("image_path")
         mode = payload.get("mode", "cinematic")
-        print("🔥 MODE RECEIVED FROM FRONTEND:", mode)
         duration = int(payload.get("duration", 10))
 
         print("\n" + "=" * 60)
