@@ -1,41 +1,48 @@
+# app/services/mastering/mastering_service.py
+
 import subprocess
-import os
 from pathlib import Path
 
 
-REAPER_PATH = "/home/supersu/indianode-backend/tools/reaper/REAPER/reaper"
-TEMPLATE_PATH = "app/services/mastering/indianode_master_template.rpp"
+# -------------------------------------------------
+# PATHS
+# -------------------------------------------------
 
+BASE_DIR = Path(__file__).resolve().parent
+
+REAPER = "/home/supersu/opt/REAPER/reaper"
+TEMPLATE = BASE_DIR / "indianode_master_template.rpp"
+
+
+# -------------------------------------------------
+# MASTER
+# -------------------------------------------------
 
 def master_audio(input_wav: str, output_wav: str):
     """
-    Runs Reaper headless to master audio using Ozone template
+    Headless mastering using REAPER batchconvert mode.
+    This mode does NOT touch audio drivers (safe for servers).
     """
 
-    input_wav = Path(input_wav).resolve()
-    output_wav = Path(output_wav).resolve()
+    input_wav = str(Path(input_wav).resolve())
+    output_wav = str(Path(output_wav).resolve())
 
-    # Reaper batch render config file
-    batch_file = output_wav.with_suffix(".txt")
-
-    batch_file.write_text(f"""
-{input_wav}\t{output_wav}
-<CONFIG
-SRATE 44100
-NCH 2
-DITHER 3
->
-""")
+    print("\n🔥 OZONE MASTERING (TRUE HEADLESS BATCH MODE)")
+    print("IN :", input_wav)
+    print("OUT:", output_wav)
 
     cmd = [
-        REAPER_PATH,
-        "-batchconvert",
-        str(batch_file)
+        REAPER,
+        "-nosplash",
+        "-batchconvert",          # ⭐ THIS IS THE FIX
+        str(TEMPLATE),
+        input_wav,
+        output_wav
     ]
+
+    print("CMD:", " ".join(cmd))
 
     subprocess.run(cmd, check=True)
 
-    batch_file.unlink(missing_ok=True)
-
-    return str(output_wav)
+    return output_wav
 

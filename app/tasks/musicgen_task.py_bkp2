@@ -4,15 +4,25 @@ import os
 import torch
 import soundfile as sf
 import subprocess
+from PIL import Image
 
 from audiocraft.models import MusicGen
-from celery import shared_task
 
+from celery import shared_task
 from app.services.job_store import job_store
 from app.services.audio_postprocess_service import enhance_audio
+from app.services.mastering.mastering_service import master_audio
+
+# ⭐ classical clean chain
 from app.services.classical_postprocess_service import classical_polish_audio
+
+# 🔥 AI judge
 from app.services.audio_quality_service import check_audio_quality
+
+# ⭐ NEW deterministic repair engine
 from app.services.audio_repair_service import repair_generation
+
+# 🔧 technical crack/hiss repair only
 from app.services.audio_technical_qa import (
     check_audio_technical_quality,
     repair_audio_technical
@@ -32,6 +42,7 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 FFMPEG = "/usr/bin/ffmpeg"
+
 
 _MODEL = None
 _MODEL_NAME = None
@@ -73,30 +84,41 @@ def load_musicgen(mode: str):
 # -------------------------------------------------
 @shared_task(name="musicgen.generate", queue="gpu")
 def generate_music_task(job_id: str, payload: dict):
-
     try:
         print(f"\n🎼 Generating music | job={job_id}")
+
         job_store.set_running(job_id)
 
         prompt = payload.get("prompt", "")
+        image_path = payload.get("image_path")
         mode = payload.get("mode", "cinematic")
         duration = int(payload.get("duration", 10))
 
+        print("\n" + "=" * 60)
+        print("🎯 INITIAL PROMPT")
+        print(prompt)
+        print("=" * 60 + "\n")
+
         model = load_musicgen(mode)
+        duration_str = str(duration)
 
         wav_path = None
         passed = False
         reason = ""
 
         # =================================================
-        # GENERATE LOOP
+        # 🔥 SMART GENERATE → TEST → FIX → REGENERATE LOOP
         # =================================================
         for attempt in range(1, MAX_RETRIES + 1):
 
             print(f"\n🎵 Attempt {attempt}/{MAX_RETRIES}")
 
+            # always reset base duration
             model.set_generation_params(duration=duration)
 
+            # -------------------------
+            # GENERATE
+            # -------------------------
             with torch.no_grad():
                 wav = model.generate([prompt])[0]
 
@@ -111,17 +133,28 @@ def generate_music_task(job_id: str, payload: dict):
                 subtype="PCM_16"
             )
 
+            # -------------------------
+            # TECHNICAL REPAIR (safe DSP)
+            # -------------------------
             tech_ok, issues = check_audio_technical_quality(wav_path)
             if not tech_ok:
-                print("🔧 Technical issues:", issues)
+                print("🔧 Technical issues detected:", issues)
                 wav_path = repair_audio_technical(wav_path)
 
-            passed, reason = check_audio_quality(wav_path, prompt, mode)
+            # -------------------------
+            # QUALITY TEST (judge)
+            # -------------------------
+            passed, reason = check_audio_quality(wav_path, prompt,mode)
 
             if passed:
                 print("✅ PASSED quality check")
                 break
 
+            print(f"❌ FAILED: {reason}")
+
+            # -------------------------
+            # ⭐ DETERMINISTIC FIX
+            # -------------------------
             prompt = repair_generation(
                 model=model,
                 prompt=prompt,
@@ -129,61 +162,99 @@ def generate_music_task(job_id: str, payload: dict):
                 duration=duration
             )
 
-        # =================================================
-        # ✅ FRIENDLY FAILURE (no scary errors to user)
-        # =================================================
+            print("🔧 Repair applied → regenerating...")
+
+        # -------------------------------------------------
+        # HARD FAIL if still bad
+        # -------------------------------------------------
         if not passed:
-            print("❌ Internal quality failure:", reason)
-            job_store.set_error(
-                job_id,
-                "This prompt needs a small tweak for best results. Please try again."
+            raise RuntimeError(
+                f"All attempts failed quality checks. Last reason: {reason}"
             )
-            return
 
         print("✅ RAW WAV:", wav_path)
 
         # =================================================
-        # POST PROCESS
+        # POST PROCESSING
         # =================================================
         if mode == "classical":
-            wav_path = os.path.abspath(classical_polish_audio(wav_path))
+            wav_path = os.path.abspath(
+                classical_polish_audio(wav_path)
+            )
         else:
-            wav_path = os.path.abspath(enhance_audio(wav_path))
+            try:
+                wav_path = os.path.abspath(enhance_audio(wav_path))
+            except Exception:
+                pass
+
+            try:
+                mastered_path = os.path.abspath(
+                    os.path.join(OUTPUT_DIR, f"{job_id}_mastered.wav")
+                )
+                wav_path = master_audio(wav_path, mastered_path)
+            except Exception:
+                pass
 
         # =================================================
         # FINAL WAV
         # =================================================
-        final_wav_path = os.path.join(OUTPUT_DIR, f"{job_id}.wav")
+        final_wav_path = os.path.abspath(
+            os.path.join(OUTPUT_DIR, f"{job_id}.wav")
+        )
+
         subprocess.run(["cp", wav_path, final_wav_path], check=True)
         wav_path = final_wav_path
 
         # =================================================
-        # MP4
+        # MP4 OUTPUT
         # =================================================
-        mp4_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+        mp4_path = os.path.abspath(
+            os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
+        )
 
-        subprocess.run([
-            FFMPEG, "-y",
-            "-f", "lavfi",
-            "-i", f"color=c=black:s=1080x1080:r=30:d={duration}",
-            "-i", wav_path,
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            "-movflags", "+faststart",
-            "-c:a", "aac",
-            "-shortest",
-            mp4_path
-        ], check=True)
+        if image_path:
+            image_path = os.path.abspath(image_path)
+            fixed_img = image_path + "_fixed.jpg"
+            Image.open(image_path).convert("RGB").save(fixed_img, "JPEG", quality=95)
+
+            cmd = [
+                FFMPEG, "-y",
+                "-loop", "1",
+                "-framerate", "30",
+                "-t", duration_str,
+                "-i", fixed_img,
+                "-i", wav_path,
+                "-vf",
+                "scale=1080:1080:force_original_aspect_ratio=decrease,"
+                "pad=1080:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-shortest",
+                mp4_path
+            ]
+        else:
+            cmd = [
+                FFMPEG, "-y",
+                "-f", "lavfi",
+                "-i", f"color=c=black:s=1080x1080:r=30:d={duration_str}",
+                "-i", wav_path,
+                "-c:v", "libx264",
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                "-c:a", "aac",
+                "-shortest",
+                mp4_path
+            ]
+
+        subprocess.run(cmd, check=True)
 
         job_store.set_done(job_id, mp4_path)
         return mp4_path
 
     except Exception as e:
-        print("❌ Internal exception:", e)
-
-        job_store.set_error(
-            job_id,
-            "This prompt needs a small tweak for best results. Please try again."
-        )
-        return
+        print("❌ TASK FAILED:", e)
+        job_store.set_error(job_id, str(e))
+        raise
 

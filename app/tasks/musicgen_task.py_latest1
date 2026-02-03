@@ -18,6 +18,8 @@ from app.services.audio_technical_qa import (
     repair_audio_technical
 )
 
+# ✅ ONLY this handles REAPER now
+
 
 # -------------------------------------------------
 # Paths
@@ -129,16 +131,8 @@ def generate_music_task(job_id: str, payload: dict):
                 duration=duration
             )
 
-        # =================================================
-        # ✅ FRIENDLY FAILURE (no scary errors to user)
-        # =================================================
         if not passed:
-            print("❌ Internal quality failure:", reason)
-            job_store.set_error(
-                job_id,
-                "This prompt needs a small tweak for best results. Please try again."
-            )
-            return
+            raise RuntimeError(f"All attempts failed. Last reason: {reason}")
 
         print("✅ RAW WAV:", wav_path)
 
@@ -149,6 +143,10 @@ def generate_music_task(job_id: str, payload: dict):
             wav_path = os.path.abspath(classical_polish_audio(wav_path))
         else:
             wav_path = os.path.abspath(enhance_audio(wav_path))
+
+        # =================================================
+        # 🔥 MASTERING (uses mastering_service now)
+        # =================================================
 
         # =================================================
         # FINAL WAV
@@ -179,11 +177,7 @@ def generate_music_task(job_id: str, payload: dict):
         return mp4_path
 
     except Exception as e:
-        print("❌ Internal exception:", e)
-
-        job_store.set_error(
-            job_id,
-            "This prompt needs a small tweak for best results. Please try again."
-        )
-        return
+        print("❌ TASK FAILED:", e)
+        job_store.set_error(job_id, str(e))
+        raise
 

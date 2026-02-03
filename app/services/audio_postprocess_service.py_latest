@@ -104,24 +104,13 @@ def enhance_audio(input_path: str, output_path: str | None = None) -> str:
     # 4. 🔥 MASTERING (NEW)
     # -------------------------------------------------
     filter_chain = (
-    # remove rumble (major cause of grrr)
-    "highpass=f=45,"
-
-    # remove harsh fizz
-    "lowpass=f=15000,"
-
-    # LIGHT denoise (not aggressive)
-    "afftdn=nf=-22,"
-
-    # small stereo smoothing
-    "dynaudnorm=f=150:g=5,"
-
-    # safe peak ceiling
-    "alimiter=limit=0.92,"
-
-    # streaming loudness
-    "loudnorm=I=-14:LRA=10:TP=-1.2"
-)
+        "highpass=f=35,"
+        "lowpass=f=15500,"
+        "afftdn=nf=-30,"
+        "acompressor=threshold=-20dB:ratio=2.5:attack=8:release=80,"
+        "alimiter=limit=0.88,"
+        "loudnorm=I=-14:LRA=9:TP=-1.2"
+    )
 
     run_ffmpeg([
         FFMPEG, "-y",

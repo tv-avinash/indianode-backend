@@ -57,5 +57,5 @@ class MusicGenService:
         if has_veena:
             veena_clarification = (
                 "Indian classical Veena performance. "
-                "Veena is a traditional Indian p
+                "Veena is a traditional Indian p")
 
