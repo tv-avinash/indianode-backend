@@ -14,16 +14,77 @@ SR = 32000
 # helpers
 # =========================================================
 
-def _fail(reason):
+def _fail(reason: str):
+    print(f"❌ QA FAIL → {reason}")
     return False, reason
 
 
 def _pass():
+    print("✅ QA PASS")
     return True, "clean"
 
 
 # =========================================================
-# musical checks
+# ------------------ TECHNICAL CHECKS ---------------------
+# (ALWAYS run for cinematic + classical)
+# =========================================================
+
+def _silence_ok(y):
+    # overall RMS energy
+    return np.sqrt(np.mean(y**2)) >= 0.005
+
+
+def _clipping_ok(y):
+    # % of clipped samples
+    return np.mean(np.abs(y) >= 0.999) < 0.002
+
+
+def _harshness_ok(y, sr):
+    S = np.abs(librosa.stft(y))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    high = S[freqs > 3500].mean()
+    low = S[freqs < 1500].mean()
+
+    return high <= low * 2.5
+
+
+def _dynamics_ok(y):
+    dyn = np.percentile(np.abs(y), 95) - np.percentile(np.abs(y), 5)
+    return dyn >= 0.03
+
+
+def _dropout_ok(y):
+    """
+    Detect sudden zero gaps / breaks (common in AI generation)
+    """
+    energy = np.abs(y)
+    silent = energy < 1e-4
+
+    runs = np.diff(np.where(np.concatenate(([0], silent, [0]))))[::2]
+
+    if len(runs) == 0:
+        return True
+
+    return np.max(runs) < 2000  # ~60ms max gap
+
+
+def _hiss_ok(y, sr):
+    """
+    Detect excessive high-frequency noise
+    """
+    S = np.abs(librosa.stft(y))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    high = S[freqs > 8000].mean()
+    mid = S[(freqs > 500) & (freqs < 3000)].mean()
+
+    return high < mid * 1.5
+
+
+# =========================================================
+# ------------------ MUSICAL CHECKS -----------------------
+# (STRICT for classical only)
 # =========================================================
 
 def _pitch_stable(y, sr):
@@ -53,9 +114,10 @@ def _pitch_stable(y, sr):
     if len(voiced) < 50:
         return True
 
+    # 🔥 tighter than before (0.35 was too loose)
     pitch_std = np.std(voiced) / (np.mean(voiced) + 1e-6)
 
-    return pitch_std < 0.35
+    return pitch_std < 0.18
 
 
 def _scale_consistency_ok(y, sr):
@@ -89,34 +151,54 @@ def _tempo_stable(y, sr):
 
 
 # =========================================================
-# technical
+# ------------------ INTENT CHECK -------------------------
+# (ALWAYS run — MOST important for cinematic)
 # =========================================================
 
-def _silence_ok(y):
-    return np.sqrt(np.mean(y**2)) >= 0.005
+def _intent_ok(y, sr, prompt):
 
+    prompt = prompt.lower()
 
-def _clipping_ok(y):
-    return np.mean(np.abs(y) >= 0.999) < 0.002
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    rms = np.mean(librosa.feature.rms(y=y))
+    centroid = np.mean(librosa.feature.spectral_centroid(y=y, sr=sr))
 
+    harm, perc = librosa.effects.hpss(y)
+    perc_ratio = np.mean(np.abs(perc)) / (np.mean(np.abs(harm)) + 1e-6)
 
-def _harshness_ok(y, sr):
-    S = np.abs(librosa.stft(y))
-    freqs = librosa.fft_frequencies(sr=sr)
+    # ------------------------------------------------
+    # calm / ambient / meditation
+    # ------------------------------------------------
+    if any(k in prompt for k in ["calm", "meditative", "ambient", "peaceful"]):
+        if tempo > 90 or perc_ratio > 0.6 or centroid > 3500:
+            return False
 
-    high = S[freqs > 3500].mean()
-    low = S[freqs < 1500].mean()
+    # ------------------------------------------------
+    # energetic / action
+    # ------------------------------------------------
+    if any(k in prompt for k in ["energetic", "action", "epic", "battle"]):
+        if tempo < 95:
+            return False
 
-    return high <= low * 2.5
+    # ------------------------------------------------
+    # melody-focused
+    # ------------------------------------------------
+    if "melody" in prompt:
+        if perc_ratio > 0.7:
+            return False
 
+    # ------------------------------------------------
+    # soft / low volume
+    # ------------------------------------------------
+    if "soft" in prompt:
+        if rms > 0.15:
+            return False
 
-def _dynamics_ok(y):
-    dyn = np.percentile(np.abs(y), 95) - np.percentile(np.abs(y), 5)
-    return dyn >= 0.03
+    return True
 
 
 # =========================================================
-# MAIN
+# =================== MAIN ENTRY ==========================
 # =========================================================
 
 def check_audio_quality(wav_path: str, prompt: str, mode: str):
@@ -130,7 +212,10 @@ def check_audio_quality(wav_path: str, prompt: str, mode: str):
 
     print(f"🎧 Quality Judge Mode = {mode.upper()}")
 
-    # always run technical
+    # =========================================
+    # TECHNICAL (always)
+    # =========================================
+
     if not _silence_ok(y):
         return _fail("silent")
 
@@ -138,12 +223,28 @@ def check_audio_quality(wav_path: str, prompt: str, mode: str):
         return _fail("clipping")
 
     if not _harshness_ok(y, sr):
-        return _fail("harsh")
+        return _fail("harsh noise")
 
     if not _dynamics_ok(y):
         return _fail("flat dynamics")
 
-    # musical strict only for classical
+    if not _dropout_ok(y):
+        return _fail("dropout")
+
+    if not _hiss_ok(y, sr):
+        return _fail("hiss noise")
+
+    # =========================================
+    # INTENT (always 🔥)
+    # =========================================
+
+    if not _intent_ok(y, sr, prompt):
+        return _fail("intent mismatch")
+
+    # =========================================
+    # MUSICAL (classical only strict)
+    # =========================================
+
     if mode == "classical":
 
         if not _pitch_stable(y, sr):
