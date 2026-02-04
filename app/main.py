@@ -20,6 +20,8 @@ from app.api import accompaniment
 from app.api import bgm
 from app.api.me import router as me_router
 from app.api.logout import router as logout_router
+from app.routes import billing, razorpay_webhook
+#from app.routes import billing
 
 # =====================================================
 # App
@@ -36,6 +38,8 @@ app.add_middleware(
 )
 app.include_router(me_router)
 app.include_router(logout_router)
+app.include_router(billing.router)
+app.include_router(razorpay_webhook.router)
 # =====================================================
 # ✅ Create DB tables automatically
 # =====================================================
