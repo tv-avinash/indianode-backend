@@ -1,0 +1,181 @@
+# app/services/audio_quality_service.py
+
+import numpy as np
+import librosa
+import torch
+import torchcrepe
+import soundfile as sf
+
+
+SR = 32000
+
+
+# =========================================================
+# helpers
+# =========================================================
+
+def _fail(reason: str):
+    print(f"❌ QA FAIL → {reason}")
+    return False, reason
+
+
+def _pass():
+    print("✅ QA PASS")
+    return True, "clean"
+
+
+# =========================================================
+# ------------------ TECHNICAL CHECKS ---------------------
+# relaxed for generative audio
+# =========================================================
+
+def _silence_ok(y):
+    return np.sqrt(np.mean(y**2)) >= 0.002
+
+
+def _clipping_ok(y):
+    return np.mean(np.abs(y) >= 0.999) < 0.01
+
+
+def _harshness_ok(y, sr):
+    S = np.abs(librosa.stft(y))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    high = S[freqs > 3500].mean()
+    low = S[freqs < 1500].mean()
+
+    return high <= low * 4.0
+
+
+def _dynamics_ok(y):
+    dyn = np.percentile(np.abs(y), 95) - np.percentile(np.abs(y), 5)
+    return dyn >= 0.015
+
+
+# ---------------------------------------------------------
+# dropout – float safe + relaxed
+# ---------------------------------------------------------
+def _dropout_ok(y, sr):
+    silent = np.abs(y) < 1e-4
+
+    runs = np.diff(np.where(np.concatenate(([0], silent, [0]))))[::2]
+
+    if len(runs) == 0:
+        return True
+
+    max_allowed = int(2.0 * sr)
+    return np.max(runs) < max_allowed
+
+
+def _hiss_ok(y, sr):
+    S = np.abs(librosa.stft(y))
+    freqs = librosa.fft_frequencies(sr=sr)
+
+    high = S[freqs > 8000].mean()
+    mid = S[(freqs > 500) & (freqs < 3000)].mean()
+
+    return high < mid * 2.5
+
+
+# =========================================================
+# ------------------ MUSICAL (ANTI-BESURA) ----------------
+# THIS is the important one 🔥
+# =========================================================
+
+def _pitch_stable(y, sr):
+    """
+    Ensures melody is not besura / wildly off-pitch
+    """
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    audio_torch = torch.tensor(y).unsqueeze(0).to(device)
+
+    f0, pd = torchcrepe.predict(
+        audio_torch,
+        sr,
+        hop_length=256,
+        fmin=50,
+        fmax=1200,
+        model="tiny",   # faster + stable
+        batch_size=256,
+        device=device,
+        return_periodicity=True
+    )
+
+    f0 = f0[0].cpu().numpy()
+    pd = pd[0].cpu().numpy()
+
+    mask = pd > 0.6
+    voiced = f0[mask]
+
+    if len(voiced) < 40:
+        return True
+
+    pitch_std = np.std(voiced) / (np.mean(voiced) + 1e-6)
+
+    # ⭐ key rule → too unstable = besura
+    return pitch_std < 0.30
+
+
+# =========================================================
+# intent (SOFT only)
+# =========================================================
+
+def _intent_soft_check(y, sr, prompt):
+    tempo, _ = librosa.beat.beat_track(y=y, sr=sr)
+    if "calm" in prompt.lower() and tempo > 120:
+        print("⚠️ intent mismatch (soft)")
+
+
+# =========================================================
+# =================== MAIN ENTRY ==========================
+# =========================================================
+
+def check_audio_quality(wav_path: str, prompt: str, mode: str, attempt: int = 1):
+
+    y, sr = sf.read(wav_path)
+
+    if y.ndim > 1:
+        y = np.mean(y, axis=1)
+
+    y = y.astype(np.float32)
+
+    print(f"🎧 QA mode={mode} | attempt={attempt}")
+
+    # =====================================================
+    # ATTEMPT 4 → RELAX EVERYTHING EXCEPT BESURA
+    # =====================================================
+    if attempt >= 4:
+        print("🚀 attempt 4 → relaxed mode (pitch only)")
+
+        if not _pitch_stable(y, sr):
+            return _fail("besura / pitch unstable")
+
+        return _pass()
+
+    # =====================================================
+    # NORMAL CHECKS (attempt 1–3)
+    # =====================================================
+
+    if not _silence_ok(y):
+        return _fail("silent")
+
+    if not _clipping_ok(y):
+        return _fail("clipping")
+
+    if not _dropout_ok(y, sr):
+        return _fail("dropout")
+
+    # soft checks
+    _harshness_ok(y, sr)
+    _dynamics_ok(y)
+    _hiss_ok(y, sr)
+    _intent_soft_check(y, sr, prompt)
+
+    # 🔥 always protect against besura
+    if not _pitch_stable(y, sr):
+        return _fail("besura / pitch unstable")
+
+    return _pass()
+

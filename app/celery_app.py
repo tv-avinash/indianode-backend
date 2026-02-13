@@ -19,7 +19,7 @@ celery.conf.update(
 # ✅ EXPLICIT imports (guaranteed registration)
 import app.tasks.musicgen_task
 import app.tasks.accompaniment_task
-
+import app.bgm.bgm_tasks
 # compatibility alias
 celery_app = celery
 

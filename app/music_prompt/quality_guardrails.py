@@ -3,183 +3,116 @@
 from typing import List
 
 """
-QUALITY GUARDRAILS — HARD BASE LOCK VERSION
+QUALITY GUARDRAILS — TIMBRE ONLY (SAFE FOR MULTI-INSTRUMENT)
 
-Philosophy:
-• LLM decides arrangement
-• Guardrail decides SOUND QUALITY ONLY
-• Some instruments use HARD BASE RULES (non-negotiable)
-• Never add instruments
-• Never remove instruments
-• Never contradict requested instruments
-
-Hard locks:
-✓ veena      → sitar proxy base
-✓ nadaswaram → clarinet proxy base
+Golden rule:
+Guardrails ONLY improve realism.
+Never change arrangement.
+Never force solo.
+Never forbid instruments.
 """
 
+
 # =================================================
-# 🔥 HARD BASE RULES (PROVEN WORKING PROMPTS)
+# TIMBRE RULES ONLY (NO STRUCTURE WORDS)
 # =================================================
 
-VEENA_BASE_RULE = (
-    "solo sitar, dry studio mono recording, close mic, warm wooden tone, "
-    "soft finger pluck, short natural decay, clean pitch, detached notes, "
-    "small pauses between notes, simple melodic phrases, single instrument only, "
-    "absolutely no accompaniment, no percussion, no drums, no background music, completely dry mix"
+VEENA_TIMBRE = (
+    "sitar style plucked string timbre, warm wooden resonance, "
+    "soft finger pluck attack, short natural decay, clean pitch stability"
+)
+
+NADASWARAM_TIMBRE = (
+    "clarinet style reed timbre, slightly bright nasal tone, "
+    "steady breath sustain, expressive slides and gamakas"
+)
+
+FLUTE_TIMBRE = (
+    "breathy air tone, soft tongued attack, smooth airflow, natural phrasing"
+)
+
+TABLA_TIMBRE = (
+    "tight strokes, crisp transients, dry skin percussion tone, clear bols"
+)
+
+MRIDANGAM_TIMBRE = (
+    "double headed drum tone, clean attack, warm resonance, precise rhythm"
+)
+
+VIOLIN_TIMBRE = (
+    "smooth bowing, light vibrato, expressive slides"
 )
 
 
-NADASWARAM_BASE_RULE = (
-    "solo clarinet playing raga hamsadhwani, dry studio mono recording, close mic, "
-    "light thin reed tone, narrow bore, slightly bright nasal timbre, focused airflow, "
-    "steady breath sustain, expressive gamakas and slides, short articulated notes, "
-    "small pauses between phrases, clean pitch, simple melodic phrases, single instrument only, "
-    "absolutely no accompaniment, no percussion, no drums, no background music, "
-    "no pads, no ambience, no reverb, completely dry mix"
-)
-
-
-# -------------------------------------------------
-# Known instruments
-# -------------------------------------------------
-
-INDIAN_INSTRUMENTS = {
-    "veena", "sitar", "bansuri", "flute", "tabla",
-    "mridangam", "tanpura", "ghatam", "kanjira",
-    "nadaswaram", "santoor", "harmonium", "violin", "piano"
-}
-
-
-# -------------------------------------------------
+# =================================================
 # MODE DETECTION
-# -------------------------------------------------
+# =================================================
 
 def _detect_mode(prompt: str) -> str:
-    text = prompt.lower()
-
-    if any(k in text for k in ["cinematic", "epic", "film", "bgm", "orchestra"]):
+    p = prompt.lower()
+    if any(x in p for x in ["cinematic", "epic", "film", "bgm"]):
         return "cinematic"
-
     return "classical"
 
 
-# -------------------------------------------------
-# SMART NEGATIVES (avoid unwanted layers)
-# -------------------------------------------------
+# =================================================
+# REALISM PATCHES
+# =================================================
 
-def _build_negatives(instruments: List[str]) -> str:
-    requested = set(i.lower() for i in instruments)
+def _instrument_rules(instruments: List[str]) -> List[str]:
 
-    candidates = [
-        "tabla",
-        "mridangam",
-        "tanpura",
-        "pads",
-        "bass",
-        "drone",
-        "strings",
-        "background music",
-        "percussion",
-        "drums",
-    ]
+    rules = []
+    lowered = [i.lower() for i in instruments]
 
-    negatives = [f"no {name}" for name in candidates if name not in requested]
-    return ", ".join(negatives)
+    if "veena" in lowered:
+        rules.append(VEENA_TIMBRE)
+
+    if "nadaswaram" in lowered:
+        rules.append(NADASWARAM_TIMBRE)
+
+    if "flute" in lowered or "bansuri" in lowered:
+        rules.append(FLUTE_TIMBRE)
+
+    if "tabla" in lowered:
+        rules.append(TABLA_TIMBRE)
+
+    if "mridangam" in lowered:
+        rules.append(MRIDANGAM_TIMBRE)
+
+    if "violin" in lowered:
+        rules.append(VIOLIN_TIMBRE)
+
+    return rules
 
 
 # =================================================
-# MAIN (FINAL STAGE BEFORE MUSICGEN)
+# MAIN
 # =================================================
 
 def apply_quality_guardrails(prompt: str, instruments: List[str]) -> str:
-    """
-    FINAL PROMPT BUILDER.
-
-    Priority:
-    1) Hard base rules (veena / nadaswaram)
-    2) Otherwise light realism polish
-    3) Mix lock
-    """
-
-    lowered = [i.lower() for i in instruments]
-    mode = _detect_mode(prompt)
 
     parts: List[str] = []
 
-    # =================================================
-    # 🔥 1️⃣ HARD LOCKS (highest priority)
-    # =================================================
+    # 1️⃣ Always keep LLM intent first
+    parts.append(prompt.strip())
 
-    if "veena" in lowered:
-        parts.append(VEENA_BASE_RULE)
+    # 2️⃣ Optional: reinforce ensemble wording (helps MusicGen)
+    if instruments:
+        parts.append("featuring " + ", ".join(instruments))
 
-        # keep musical info like raga/tala
-        parts.append(prompt.strip())
+    # 3️⃣ Timbre realism only
+    parts.extend(_instrument_rules(instruments))
 
-
-    elif "nadaswaram" in lowered:
-        parts.append(NADASWARAM_BASE_RULE)
-
-        # keep raga/tala words from original
-        parts.append(prompt.strip())
-
-
-    # =================================================
-    # 2️⃣ NORMAL FLOW (no hard lock)
-    # =================================================
-
-    else:
-        parts.append(prompt.strip())
-
-        realism_rules = []
-
-        for name in lowered:
-
-            if name in ["flute", "bansuri"]:
-                realism_rules.append(
-                    "breathy air tone, soft tongued attack, stable pitch, natural airflow"
-                )
-
-            elif name == "violin":
-                realism_rules.append(
-                    "smooth bowing, light vibrato, controlled sustain"
-                )
-
-            elif name in ["mridangam", "tabla"]:
-                realism_rules.append(
-                    "tight strokes, clean transients, dry skin sound"
-                )
-
-        if realism_rules:
-            parts.extend(realism_rules)
-
-    # =================================================
-    # 3️⃣ MIX LOCK
-    # =================================================
+    # 4️⃣ Mix style
+    mode = _detect_mode(prompt)
 
     if mode == "classical":
-        negatives = _build_negatives(lowered)
-
-        parts.append(
-            "dry studio close mic, mono, very low room sound, minimal reverb, minimal ambience"
-        )
-
-        if negatives:
-            parts.append(negatives)
-
+        parts.append("dry studio close mic, minimal reverb, natural room sound")
     else:
-        parts.append(
-            "wide stereo, lush ambience, soft reverb, cinematic depth"
-        )
+        parts.append("wide stereo, lush ambience, soft reverb, cinematic depth")
 
-    # =================================================
-    # 4️⃣ GLOBAL CLARITY
-    # =================================================
-
-    parts.append(
-        "clean articulation, natural dynamics, clear tone, no distortion, clear ending"
-    )
+    # 5️⃣ Global clarity
+    parts.append("clean articulation, natural dynamics, clear tone, no distortion, no clipping")
 
     return ", ".join(parts)
 

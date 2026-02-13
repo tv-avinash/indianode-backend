@@ -1,60 +1,61 @@
-from fastapi import APIRouter, UploadFile, File
+# app/api/bgm.py
+
+import os
 import uuid
 import shutil
-import os
 
-from app.tasks.bgm_task import generate_bgm
-from celery.result import AsyncResult
-from app.celery_app import celery
+from fastapi import APIRouter, UploadFile, File, Form
+from fastapi.responses import FileResponse
+
+from app.bgm.bgm_tasks import generate_bgm_task
 
 router = APIRouter(prefix="/api/bgm", tags=["bgm"])
 
-
-UPLOAD_DIR = "/tmp/bgm_jobs"
+UPLOAD_DIR = "bgm_jobs"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 
-# =========================
-# Generate
-# =========================
-@router.post("/generate")
-async def generate(file: UploadFile = File(...)):
+# =====================================================
+# POST /api/bgm/process
+# =====================================================
+@router.post("/process")
+async def process_video(
+    file: UploadFile = File(...),
+    prompt: str = Form("")
+):
+    job_id = uuid.uuid4().hex[:8]
 
-    job_id = str(uuid.uuid4())
-    input_path = f"{UPLOAD_DIR}/{job_id}_input.mp4"
+    in_path = f"{UPLOAD_DIR}/{job_id}_in.mp4"
+    out_path = f"{UPLOAD_DIR}/{job_id}_out.mp4"
 
-    with open(input_path, "wb") as f:
+    with open(in_path, "wb") as f:
         shutil.copyfileobj(file.file, f)
+    print("TYPE:", type(generate_bgm_task))
+    print("HAS DELAY:", hasattr(generate_bgm_task, "delay"))
+    print("CALLING DELAY NOW")
+    generate_bgm_task.delay(in_path, out_path, prompt)
 
-    task = generate_bgm.delay(input_path)
-
-    return {"job_id": task.id}
+    return {"job_id": job_id}
 
 
-# =========================
-# Status
-# =========================
+# =====================================================
+# GET /api/bgm/status/{job}
+# =====================================================
 @router.get("/status/{job_id}")
 def status(job_id: str):
+    out_path = f"{UPLOAD_DIR}/{job_id}_out.mp4"
 
-    task = AsyncResult(job_id, app=celery)
+    if os.path.exists(out_path):
+        return {"status": "done"}
 
-    return {"status": task.status}
+    return {"status": "processing"}
 
 
-# =========================
-# Download
-# =========================
+# =====================================================
+# GET /api/bgm/download/{job}
+# =====================================================
 @router.get("/download/{job_id}")
 def download(job_id: str):
-
-    task = AsyncResult(job_id, app=celery)
-
-    if not task.successful():
-        return {"error": "Not ready"}
-
-    path = task.result
-
-    from fastapi.responses import FileResponse
-    return FileResponse(path, filename="bgm_video.mp4")
+    path = f"{UPLOAD_DIR}/{job_id}_out.mp4"
+    return FileResponse(path, media_type="video/mp4", filename="bgm_video.mp4")
 

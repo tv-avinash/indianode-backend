@@ -13,10 +13,11 @@ from celery.result import AsyncResult
 from app.celery_app import celery_app
 from app.tasks.musicgen_task import generate_music_task
 from app.intelligence.intent_analyzer import analyze_intent
-
+from app.intelligence.prompt_enhancer import enhance_prompt
 # ✅ QUALITY GUARDRAILS
 from app.music_prompt.quality_guardrails import apply_quality_guardrails
-
+from app.intelligence.prompt_enhancer import enhance_prompt
+from app.intelligence.intent_expander import expand_prompt
 router = APIRouter(prefix="/api/music", tags=["music"])
 
 OUTPUT_DIR = "outputs"
@@ -74,11 +75,31 @@ def generate_music(req: GenerateRequest):
     word_count = len(final_prompt.split())
 
     #if word_count < MIN_WORDS_FOR_DIRECT_PROMPT:
-    #    intent = analyze_intent(final_prompt)
-    #    music_prompt = build_music_prompt_from_intent(intent)
+    #intent = analyze_intent(final_prompt)
+    #music_prompt = build_music_prompt_from_intent(intent)
     #else:
-    music_prompt = final_prompt
-
+    #music_prompt = final_prompt
+    print("\n================ PROMPT PIPELINE ================")
+    print("🟡 USER INPUT:")
+    print(final_prompt)
+    print(f"🔥 MODE RAW VALUE -> [{req.mode}] (type={type(req.mode)})")
+    expanded = expand_prompt(
+    final_prompt,
+    instruments=req.instruments,
+    preset=req.preset,
+    mode=req.mode
+    )
+    music_prompt = expanded
+    #expanded = expand_prompt(final_prompt)     # NEW layer
+    #music_prompt = enhance_prompt(expanded)   # existing layer
+    #music_prompt = expanded
+    print("\n================ PROMPT PIPELINE ================")
+    print("🟡 EXPANDED:")
+    print(expanded)
+    print("\n================ PROMPT PIPELINE ================")
+    print("🟡 final to musicgen:")
+    print(music_prompt)
+    #music_prompt = enhance_prompt(final_prompt)
     # ✅ APPLY GUARDRAILS (NO SIDE EFFECTS)
     guarded_prompt = apply_quality_guardrails(
         music_prompt,

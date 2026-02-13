@@ -13,6 +13,7 @@ from app.services.audio_postprocess_service import enhance_audio
 from app.services.classical_postprocess_service import classical_polish_audio
 from app.services.audio_quality_service import check_audio_quality
 from app.services.audio_repair_service import repair_generation
+from app.music_prompt.quality_guardrails import apply_quality_guardrails
 from app.services.audio_technical_qa import (
     check_audio_technical_quality,
     repair_audio_technical
@@ -58,7 +59,6 @@ def load_musicgen(mode: str):
         _MODEL_NAME = target_model
 
         _MODEL.set_generation_params(
-            duration=10,
             use_sampling=True,
             top_k=250,
             temperature=1.0,
@@ -79,75 +79,163 @@ def generate_music_task(job_id: str, payload: dict):
         job_store.set_running(job_id)
 
         prompt = payload.get("prompt", "")
+
+        # ✅ ALWAYS apply (classical + cinematic)
+        print("🎼 PROMPT RECEIVED BY WORKER:", prompt)
         mode = payload.get("mode", "cinematic")
         duration = int(payload.get("duration", 10))
         image_path = payload.get("image_path")   # ⭐ already passed from API
 
         model = load_musicgen(mode)
+        model.set_generation_params(duration=duration)
 
         # =================================================
         # GENERATE
         # =================================================
-        with torch.no_grad():
-            wav = model.generate([prompt])[0]
+        current_prompt = prompt
+        raw_path = None
+        ok = False
+        reason = ""
 
-        wav_path = os.path.abspath(
+        # ============================================
+        # RETRY LOOP (RAW ONLY — NO POSTPROCESS YET)
+        # ============================================
+
+        for attempt in range(MAX_RETRIES):
+
+            print(f"🎵 Attempt {attempt+1}/{MAX_RETRIES}")
+
+            with torch.no_grad():
+                wav = model.generate([current_prompt])[0]
+
+            raw_path = os.path.abspath(
+                os.path.join(OUTPUT_DIR, f"{job_id}_raw.wav")
+            )
+
+            sf.write(
+                raw_path,
+                wav.cpu().numpy().T,
+                samplerate=32000,
+                subtype="PCM_16"
+            )
+
+            ok, reason = check_audio_quality(raw_path, current_prompt, mode)
+
+            print("🔍 QA:", ok, reason)
+
+            if ok:
+                break
+
+            current_prompt = repair_generation(
+                model,
+                current_prompt,
+                reason,
+                duration
+            )
+            print("🧠 New prompt →", current_prompt)
+
+        if not ok:
+            msg = "Some finetuning of prompt needed, Lets retry"
+            job_store.set_error(job_id, msg)
+            return 
+
+        # ============================================
+        # POSTPROCESS ONLY ONCE (AFTER PASS)
+        # ============================================
+
+        if mode == "classical":
+            wav_path = os.path.abspath(classical_polish_audio(raw_path))
+        else:
+            wav_path = os.path.abspath(enhance_audio(raw_path))
+        final_wav_path = os.path.abspath(
             os.path.join(OUTPUT_DIR, f"{job_id}.wav")
         )
-
-        sf.write(
-            wav_path,
-            wav.cpu().numpy().T,
-            samplerate=32000,
-            subtype="PCM_16"
-        )
+        subprocess.run(["cp", wav_path, final_wav_path], check=True)
+        wav_path = final_wav_path
 
         # =================================================
-        # POST PROCESS (UNCHANGED)
+        # MP4 CREATION (FIXED FOR UNIVERSAL COMPATIBILITY)
         # =================================================
-        if mode == "classical":
-            wav_path = os.path.abspath(classical_polish_audio(wav_path))
-        else:
-            wav_path = os.path.abspath(enhance_audio(wav_path))
+        # =================================================
+        # MP4 CREATION (stable + compatible)
+        # =================================================
 
-        # =================================================
-        # MP4 CREATION (ONLY THIS BLOCK UPDATED)
-        # =================================================
         mp4_path = os.path.join(OUTPUT_DIR, f"{job_id}.mp4")
 
+        COMMON_FLAGS = [
+            "-map", "0:v:0",
+            "-map", "1:a:0",
+            "-c:v", "libx264",
+            "-preset", "medium",
+            "-profile:v", "baseline",
+            "-level", "3.0",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-ar", "44100",
+            "-ac", "2",
+            "-shortest",
+        ]
+
         if image_path and os.path.exists(image_path):
-            print("🖼 Using uploaded image:", image_path)
 
-            subprocess.run([
-                FFMPEG, "-y",
-                "-loop", "1",
-                "-i", image_path,
-                "-i", wav_path,
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-shortest",
-                mp4_path
-            ], check=True)
+            print("🖼 Normalizing uploaded image for mp4 compatibility:", image_path)
 
+            safe_img = os.path.join(OUTPUT_DIR, f"{job_id}_frame.jpg")
+
+            # ⭐ convert ANY image → safe 1080x1080 yuv420p jpg
+            subprocess.run(
+                [
+                    FFMPEG, "-y",
+                    "-i", image_path,
+                    "-vf",
+                    "scale=1080:1080:force_original_aspect_ratio=decrease,"
+                    "pad=1080:1080:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+                    "-frames:v", "1",
+                    safe_img,
+                ],
+                check=True,
+            )
+
+            subprocess.run(
+                [
+                    FFMPEG, "-y",
+                    "-loop", "1",
+                    "-framerate", "30",
+                    "-i", safe_img,   # ⭐ use normalized image
+                    "-i", wav_path,
+                    *COMMON_FLAGS,
+                    mp4_path,
+                ],
+                check=True,
+            )
+
+
+#################################
+############################################
         else:
+
             print("🎨 No image → generating indianode branded frame")
 
-            subprocess.run([
-                FFMPEG, "-y",
-                "-f", "lavfi",
-                "-i",
-                f"color=c=black:s=1080x1080:r=30:d={duration},"
-                "drawtext=text='indianode.com':"
-                "fontcolor=white:fontsize=60:"
-                "x=(w-text_w)/2:y=(h-text_h)/2",
-                "-i", wav_path,
-                "-c:v", "libx264",
-                "-pix_fmt", "yuv420p",
-                "-c:a", "aac",
-                "-shortest",
-                mp4_path
-            ], check=True)
+            subprocess.run(
+                [
+                    FFMPEG, "-y",
+                    "-f", "lavfi",
+                    "-i",
+                    f"color=c=black:s=1080x1080:r=30:d={duration},"
+                    "drawtext=text='INDIANODE':"
+                    "fontcolor=white:"
+                    "fontsize=80:"
+                    "x=(w-text_w)/2:"
+                    "y=(h-text_h)/2",
+                    "-i", wav_path,
+                    *COMMON_FLAGS,
+                    mp4_path,
+                ],
+                check=True,
+            )
+
 
         # =================================================
         job_store.set_done(job_id, mp4_path)
@@ -159,5 +247,5 @@ def generate_music_task(job_id: str, payload: dict):
             job_id,
             "This prompt needs a small tweak for best results. Please try again."
         )
-        return
+        raise
 
